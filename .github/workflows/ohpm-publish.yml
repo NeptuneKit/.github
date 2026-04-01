@@ -100,7 +100,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -lc "${{ inputs.build_command }}"
+          build_script="${RUNNER_TEMP}/ohpm-build-command.sh"
+          printf '%s\n' "${{ inputs.build_command }}" > "${build_script}"
+          chmod +x "${build_script}"
+          bash "${build_script}"
 
       - name: Resolve HAR path
         id: har
