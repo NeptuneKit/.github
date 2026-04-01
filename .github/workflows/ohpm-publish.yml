@@ -98,10 +98,12 @@ jobs:
       - name: Build HAR (optional)
         if: ${{ inputs.build_command != '' }}
         shell: bash
+        env:
+          BUILD_COMMAND_RAW: ${{ inputs.build_command }}
         run: |
           set -euo pipefail
           build_script="${RUNNER_TEMP}/ohpm-build-command.sh"
-          printf '%s\n' "${{ inputs.build_command }}" > "${build_script}"
+          printf '%s\n' "${BUILD_COMMAND_RAW}" > "${build_script}"
           chmod +x "${build_script}"
           bash "${build_script}"
 
