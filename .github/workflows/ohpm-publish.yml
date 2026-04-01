@@ -149,13 +149,7 @@ jobs:
           if [[ -f "${changelog_path}" ]]; then
             cp -f "${changelog_path}" "${tmp_dir}/package/changelog.md"
           else
-            cat > "${tmp_dir}/package/changelog.md" <<'MD'
-# Changelog
-
-## 1.0.0
-
-- Initial release.
-MD
+            printf '%s\n' '# Changelog' '' '## 1.0.0' '' '- Initial release.' > "${tmp_dir}/package/changelog.md"
           fi
           find "${tmp_dir}/package" -name '._*' -delete
           (
