@@ -124,52 +124,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-import os
-import tarfile
-import tempfile
-import shutil
+          har_path="${{ steps.har.outputs.har_path }}"
+          license_path="${{ inputs.license_path }}"
+          readme_path="${{ inputs.readme_path }}"
+          changelog_path="${{ inputs.changelog_path }}"
 
-har_path = "${{ steps.har.outputs.har_path }}"
-license_path = "${{ inputs.license_path }}"
-readme_path = "${{ inputs.readme_path }}"
-changelog_path = "${{ inputs.changelog_path }}"
+          if [[ ! -f "${har_path}" ]]; then
+            echo "HAR not found: ${har_path}" >&2
+            exit 1
+          fi
+          if [[ ! -f "${license_path}" ]]; then
+            echo "License not found: ${license_path}" >&2
+            exit 1
+          fi
 
-if not os.path.isfile(har_path):
-    raise SystemExit(f"HAR not found: {har_path}")
-if not os.path.isfile(license_path):
-    raise SystemExit(f"License not found: {license_path}")
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "${tmp_dir}"' EXIT
+          tar -xzf "${har_path}" -C "${tmp_dir}"
+          mkdir -p "${tmp_dir}/package"
+          cp -f "${license_path}" "${tmp_dir}/package/LICENSE"
+          if [[ -f "${readme_path}" ]]; then
+            cp -f "${readme_path}" "${tmp_dir}/package/readme.md"
+          fi
+          if [[ -f "${changelog_path}" ]]; then
+            cp -f "${changelog_path}" "${tmp_dir}/package/changelog.md"
+          else
+            cat > "${tmp_dir}/package/changelog.md" <<'MD'
+# Changelog
 
-work = tempfile.mkdtemp(prefix="ohpm-har-")
-try:
-    with tarfile.open(har_path, "r:gz") as tar:
-        tar.extractall(work)
+## 1.0.0
 
-    pkg_dir = os.path.join(work, "package")
-    os.makedirs(pkg_dir, exist_ok=True)
-
-    shutil.copy2(license_path, os.path.join(pkg_dir, "LICENSE"))
-    if os.path.isfile(readme_path):
-        shutil.copy2(readme_path, os.path.join(pkg_dir, "readme.md"))
-    if os.path.isfile(changelog_path):
-        shutil.copy2(changelog_path, os.path.join(pkg_dir, "changelog.md"))
-    else:
-        with open(os.path.join(pkg_dir, "changelog.md"), "w", encoding="utf-8") as f:
-            f.write("# Changelog\n\n## 1.0.0\n\n- Initial release.\n")
-
-    # Remove macOS resource forks.
-    for root, _, files in os.walk(pkg_dir):
-        for fn in files:
-            if fn.startswith("._"):
-                os.remove(os.path.join(root, fn))
-
-    with tarfile.open(har_path, "w:gz") as tar:
-        tar.add(pkg_dir, arcname="package")
-
-    print(f"Injected metadata into {har_path}")
-finally:
-    shutil.rmtree(work, ignore_errors=True)
-PY
+- Initial release.
+MD
+          fi
+          find "${tmp_dir}/package" -name '._*' -delete
+          (
+            cd "${tmp_dir}"
+            tar -czf "${har_path}" package
+          )
+          echo "Injected metadata into ${har_path}"
 
       - name: Configure OHPM publish credentials
         if: ${{ !inputs.dry_run }}
