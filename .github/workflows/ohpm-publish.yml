@@ -1,0 +1,257 @@
+name: OHPM Publish Reusable
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Package version
+        required: true
+        type: string
+      dry_run:
+        description: Build only, skip publish
+        required: false
+        default: false
+        type: boolean
+      build_command:
+        description: Optional shell command to build .har artifact
+        required: false
+        default: ""
+        type: string
+      har_path:
+        description: Optional explicit .har path
+        required: false
+        default: ""
+        type: string
+      har_glob:
+        description: Glob used when har_path is empty
+        required: false
+        default: "**/*.har"
+        type: string
+      license_path:
+        description: License path used for HAR metadata injection
+        required: false
+        default: "LICENSE"
+        type: string
+      readme_path:
+        description: Readme path used for HAR metadata injection
+        required: false
+        default: "README.md"
+        type: string
+      changelog_path:
+        description: Changelog path used for HAR metadata injection
+        required: false
+        default: "CHANGELOG.md"
+        type: string
+      publish_registry:
+        description: OHPM registry URL
+        required: false
+        default: "https://ohpm.openharmony.cn/ohpm/"
+        type: string
+    secrets:
+      OHPM_PUBLISH_ID:
+        required: true
+      OHPM_PRIVATE_KEY_PEM:
+        required: false
+      OHPM_AUTH_TOKEN:
+        required: false
+      OHPM_KEY_PASSPHRASE_ENCRYPTED:
+        required: false
+      OHPM_KEY_PASSPHRASE:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: [self-hosted, macOS, ARM64]
+    env:
+      OHPM_REGISTRY: ${{ inputs.publish_registry }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare self-hosted toolchain
+        if: ${{ runner.environment == 'self-hosted' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolkit_root="${HOME}/harmonyOS-command-line-tools"
+          if [[ ! -d "${toolkit_root}" ]]; then
+            echo "Missing toolkit at ${toolkit_root}" >&2
+            exit 1
+          fi
+          chmod +x "${toolkit_root}/bin/ohpm" 2>/dev/null || true
+          chmod +x "${toolkit_root}/bin/hvigorw" 2>/dev/null || true
+          chmod +x "${toolkit_root}/hvigor/bin/hvigorw" 2>/dev/null || true
+          echo "JAVA_HOME=${HOME}/Java/temurin-17.jdk/Contents/Home" >> "${GITHUB_ENV}"
+          echo "DEVECO_SDK_HOME=${toolkit_root}/sdk" >> "${GITHUB_ENV}"
+          echo "HOS_SDK_HOME=${toolkit_root}/sdk/default/openharmony" >> "${GITHUB_ENV}"
+          echo "${HOME}/Java/temurin-17.jdk/Contents/Home/bin" >> "${GITHUB_PATH}"
+          echo "${toolkit_root}/bin" >> "${GITHUB_PATH}"
+          echo "${toolkit_root}/tool/node/bin" >> "${GITHUB_PATH}"
+          echo "${toolkit_root}/hvigor/bin" >> "${GITHUB_PATH}"
+          echo "${toolkit_root}/node_modules/.bin" >> "${GITHUB_PATH}"
+          echo "${toolkit_root}/sdk/default/openharmony/toolchains" >> "${GITHUB_PATH}"
+
+      - name: Build HAR (optional)
+        if: ${{ inputs.build_command != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -lc "${{ inputs.build_command }}"
+
+      - name: Resolve HAR path
+        id: har
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.har_path }}" ]]; then
+            resolved_har="${{ inputs.har_path }}"
+          else
+            resolved_har="$(python3 - <<'PY'
+import glob
+paths = sorted(p for p in glob.glob('${{ inputs.har_glob }}', recursive=True) if p.endswith('.har'))
+print(paths[0] if paths else '')
+PY
+)"
+          fi
+
+          if [[ -z "${resolved_har}" || ! -f "${resolved_har}" ]]; then
+            echo "No .har artifact found. har_path=${{ inputs.har_path }}, har_glob=${{ inputs.har_glob }}" >&2
+            exit 1
+          fi
+
+          printf 'har_path=%s\n' "${resolved_har}" >> "${GITHUB_OUTPUT}"
+
+      - name: Inject HAR metadata files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+import os
+import tarfile
+import tempfile
+import shutil
+
+har_path = "${{ steps.har.outputs.har_path }}"
+license_path = "${{ inputs.license_path }}"
+readme_path = "${{ inputs.readme_path }}"
+changelog_path = "${{ inputs.changelog_path }}"
+
+if not os.path.isfile(har_path):
+    raise SystemExit(f"HAR not found: {har_path}")
+if not os.path.isfile(license_path):
+    raise SystemExit(f"License not found: {license_path}")
+
+work = tempfile.mkdtemp(prefix="ohpm-har-")
+try:
+    with tarfile.open(har_path, "r:gz") as tar:
+        tar.extractall(work)
+
+    pkg_dir = os.path.join(work, "package")
+    os.makedirs(pkg_dir, exist_ok=True)
+
+    shutil.copy2(license_path, os.path.join(pkg_dir, "LICENSE"))
+    if os.path.isfile(readme_path):
+        shutil.copy2(readme_path, os.path.join(pkg_dir, "readme.md"))
+    if os.path.isfile(changelog_path):
+        shutil.copy2(changelog_path, os.path.join(pkg_dir, "changelog.md"))
+    else:
+        with open(os.path.join(pkg_dir, "changelog.md"), "w", encoding="utf-8") as f:
+            f.write("# Changelog\n\n## 1.0.0\n\n- Initial release.\n")
+
+    # Remove macOS resource forks.
+    for root, _, files in os.walk(pkg_dir):
+        for fn in files:
+            if fn.startswith("._"):
+                os.remove(os.path.join(root, fn))
+
+    with tarfile.open(har_path, "w:gz") as tar:
+        tar.add(pkg_dir, arcname="package")
+
+    print(f"Injected metadata into {har_path}")
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+PY
+
+      - name: Configure OHPM publish credentials
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          OHPM_PRIVATE_KEY_PEM: ${{ secrets.OHPM_PRIVATE_KEY_PEM }}
+          OHPM_PUBLISH_ID: ${{ secrets.OHPM_PUBLISH_ID }}
+          OHPM_AUTH_TOKEN: ${{ secrets.OHPM_AUTH_TOKEN }}
+          OHPM_KEY_PASSPHRASE_ENCRYPTED: ${{ secrets.OHPM_KEY_PASSPHRASE_ENCRYPTED }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OHPM_PUBLISH_ID}" ]]; then
+            echo "OHPM_PUBLISH_ID is required for publish." >&2
+            exit 1
+          fi
+
+          mkdir -p "${HOME}/.ohpm"
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" && -f "${HOME}/.ohpm/keys/ohpm_rsa_20260401" ]]; then
+            key_path="${HOME}/.ohpm/keys/ohpm_rsa_20260401"
+          else
+            if [[ -z "${OHPM_PRIVATE_KEY_PEM:-}" ]]; then
+              echo "OHPM_PRIVATE_KEY_PEM is required for non-self-hosted publish." >&2
+              exit 1
+            fi
+            key_path="${HOME}/.ohpm/publish_key.pem"
+            printf '%s\n' "${OHPM_PRIVATE_KEY_PEM}" > "${key_path}"
+          fi
+          chmod 600 "${key_path}"
+
+          ohpm config set key_path "${key_path}"
+          ohpm config set publish_id "${OHPM_PUBLISH_ID}"
+          ohpm config set registry "${OHPM_REGISTRY}"
+          ohpm config set publish_registry "${OHPM_REGISTRY}"
+          ohpm config set log_level "warn"
+
+          if [[ -n "${OHPM_KEY_PASSPHRASE_ENCRYPTED:-}" ]]; then
+            crypto_path="${HOME}/.ohpm/crypto-ci"
+            if [[ ! -d "${crypto_path}" ]]; then
+              echo "Missing crypto component at ${crypto_path}" >&2
+              exit 1
+            fi
+            ohpm config set crypto_path "${crypto_path}"
+            ohpm config set key_passphrase "${OHPM_KEY_PASSPHRASE_ENCRYPTED}"
+          fi
+
+          if [[ -n "${OHPM_AUTH_TOKEN:-}" ]]; then
+            ohpm config set "//ohpm.openharmony.cn/ohpm/:_auth" "${OHPM_AUTH_TOKEN}"
+          fi
+
+      - name: Publish HAR to OHPM
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          har_file="${{ steps.har.outputs.har_path }}"
+
+          if [[ "${RUNNER_ENVIRONMENT:-}" == "self-hosted" ]]; then
+            ohpm publish "${har_file}" --publish_registry "${OHPM_REGISTRY}"
+          elif [[ -n "${OHPM_KEY_PASSPHRASE:-}" ]]; then
+            if command -v script >/dev/null 2>&1; then
+              printf 'y\n%s\n' "${OHPM_KEY_PASSPHRASE}" | script -q -e -c "ohpm publish \"${har_file}\" --publish_registry \"${OHPM_REGISTRY}\"" /dev/null
+            else
+              printf '%s\n' "${OHPM_KEY_PASSPHRASE}" | ohpm publish "${har_file}" --publish_registry "${OHPM_REGISTRY}"
+            fi
+          else
+            ohpm publish "${har_file}" --publish_registry "${OHPM_REGISTRY}"
+          fi
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dry_run=true, skip publish."
+          echo "resolved har: ${{ steps.har.outputs.har_path }}"
