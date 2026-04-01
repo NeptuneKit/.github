@@ -123,7 +123,8 @@ jobs:
             exit 1
           fi
 
-          printf 'har_path=%s\n' "${resolved_har}" >> "${GITHUB_OUTPUT}"
+          resolved_har_abs="$(cd "$(dirname "${resolved_har}")" && pwd)/$(basename "${resolved_har}")"
+          printf 'har_path=%s\n' "${resolved_har_abs}" >> "${GITHUB_OUTPUT}"
 
       - name: Inject HAR metadata files
         shell: bash
