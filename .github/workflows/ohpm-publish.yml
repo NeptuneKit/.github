@@ -55,7 +55,7 @@ on:
       runner_label:
         description: Dedicated self-hosted runner label
         required: false
-        default: "neptune-harmony-release"
+        default: "ARM64"
         type: string
     secrets:
       OHPM_PUBLISH_ID:
