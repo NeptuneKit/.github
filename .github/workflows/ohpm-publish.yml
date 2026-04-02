@@ -137,7 +137,7 @@ jobs:
           if [[ -n "${{ inputs.har_path }}" ]]; then
             resolved_har="${{ inputs.har_path }}"
           else
-            resolved_har="$(python3 -c \"import glob; paths = sorted(p for p in glob.glob(r'${{ inputs.har_glob }}', recursive=True) if p.endswith('.har')); print(paths[0] if paths else '')\")"
+            resolved_har="$(python3 -c "import glob; paths = sorted(p for p in glob.glob(r'${{ inputs.har_glob }}', recursive=True) if p.endswith('.har')); print(paths[0] if paths else '')")"
           fi
 
           if [[ -z "${resolved_har}" || ! -f "${resolved_har}" ]]; then
