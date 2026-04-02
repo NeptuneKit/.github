@@ -47,6 +47,16 @@ on:
         required: false
         default: "https://ohpm.openharmony.cn/ohpm/"
         type: string
+      environment_name:
+        description: GitHub Environment name for publish job
+        required: false
+        default: "harmony-release"
+        type: string
+      runner_label:
+        description: Dedicated self-hosted runner label
+        required: false
+        default: "neptune-harmony-release"
+        type: string
     secrets:
       OHPM_PUBLISH_ID:
         required: true
@@ -58,13 +68,25 @@ on:
         required: false
       OHPM_KEY_PASSPHRASE:
         required: false
+      NEPTUNE_RELEASE_ALERT_WEBHOOK:
+        required: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: ohpm-publish-${{ github.repository }}-${{ github.ref_name || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on:
+      - self-hosted
+      - macOS
+      - ARM64
+      - ${{ inputs.runner_label }}
+    environment:
+      name: ${{ inputs.environment_name }}
     env:
       OHPM_REGISTRY: ${{ inputs.publish_registry }}
 
@@ -243,3 +265,28 @@ jobs:
           set -euo pipefail
           echo "dry_run=true, skip publish."
           echo "resolved har: ${{ steps.har.outputs.har_path }}"
+
+  notify-on-failure:
+    needs: [publish]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify release failure
+        shell: bash
+        env:
+          RELEASE_ALERT_WEBHOOK: ${{ secrets.NEPTUNE_RELEASE_ALERT_WEBHOOK }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_ALERT_WEBHOOK:-}" ]]; then
+            echo "NEPTUNE_RELEASE_ALERT_WEBHOOK is empty, skip notification."
+            exit 0
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          message="OHPM Publish Reusable failed: repo=${GITHUB_REPOSITORY} ref=${GITHUB_REF_NAME} run=${run_url}"
+          escaped_message="${message//\"/\\\"}"
+
+          curl -fsS -X POST "${RELEASE_ALERT_WEBHOOK}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\":\"${escaped_message}\"}"
